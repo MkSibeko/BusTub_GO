@@ -117,7 +117,7 @@ func NewBufferPoolManager(numFrames int, diskManager *disk.DiskManager) *BufferP
 	}
 
 	// Initialize all frames and add to free list
-	for i := 0; i < numFrames; i++ {
+	for i := range numFrames {
 		frameID := common.FrameID(i)
 		bpm.frames[i] = NewFrameHeader(frameID)
 		bpm.freeFrames = append(bpm.freeFrames, frameID)
@@ -167,40 +167,12 @@ func (bpm *BufferPoolManager) NewPage() common.PageID {
 	// TODO (ASSIGNMENT): Implement NewPage
 	//
 	// Step 1: Find a free frame or evict
-	// var frameID FrameID
-	// if len(bpm.freeFrames) > 0 {
-	//     // Pop from free list
-	//     frameID = bpm.freeFrames[len(bpm.freeFrames)-1]
-	//     bpm.freeFrames = bpm.freeFrames[:len(bpm.freeFrames)-1]
-	// } else {
-	//     // Try to evict
-	//     var ok bool
-	//     frameID, ok = bpm.replacer.Evict()
-	//     if !ok {
-	//         return InvalidPageID // No evictable frames
-	//     }
-	//     // Get the evicted frame and flush if dirty
-	//     frame := bpm.frames[frameID]
-	//     if frame.IsDirty() {
-	//         // Flush to disk
-	//     }
-	//     // Remove old page from page table
-	//     delete(bpm.pageTable, frame.GetPageID())
-	// }
 	//
 	// Step 2: Allocate page ID
-	// pageID := PageID(bpm.nextPageID.Add(1) - 1)
 	//
 	// Step 3: Initialize frame
-	// frame := bpm.frames[frameID]
-	// frame.Reset()
-	// frame.SetPageID(pageID)
-	// frame.IncrementPinCount()
 	//
 	// Step 4: Update tracking
-	// bpm.pageTable[pageID] = frameID
-	// bpm.replacer.RecordAccess(frameID, AccessTypeUnknown)
-	// bpm.replacer.SetEvictable(frameID, false) // Pinned
 	//
 	// return pageID
 
@@ -235,29 +207,6 @@ func (bpm *BufferPoolManager) DeletePage(pageID common.PageID) bool {
 	defer bpm.bpmLatch.Unlock()
 
 	// TODO (ASSIGNMENT): Implement DeletePage
-	//
-	// frameID, exists := bpm.pageTable[pageID]
-	// if !exists {
-	//     return true // Page not in pool
-	// }
-	//
-	// frame := bpm.frames[frameID]
-	// if frame.GetPinCount() > 0 {
-	//     return false // Cannot delete pinned page
-	// }
-	//
-	// // Remove from tracking
-	// delete(bpm.pageTable, pageID)
-	// bpm.replacer.Remove(frameID)
-	//
-	// // Reset frame and add to free list
-	// frame.Reset()
-	// bpm.freeFrames = append(bpm.freeFrames, frameID)
-	//
-	// // Deallocate from disk
-	// bpm.diskScheduler.DeallocatePage(pageID)
-	//
-	// return true
 
 	panic("TODO: Implement BufferPoolManager.DeletePage()")
 }
@@ -355,29 +304,6 @@ func (bpm *BufferPoolManager) FlushPage(pageID common.PageID) bool {
 	defer bpm.bpmLatch.Unlock()
 
 	// TODO (ASSIGNMENT): Implement FlushPage
-	//
-	// frameID, exists := bpm.pageTable[pageID]
-	// if !exists {
-	//     return false
-	// }
-	//
-	// frame := bpm.frames[frameID]
-	//
-	// // Create disk request
-	// promise := bpm.diskScheduler.CreatePromise()
-	// request := DiskRequest{
-	//     IsWrite:  true,
-	//     Data:     frame.GetData(),
-	//     PageID:   pageID,
-	//     Callback: promise,
-	// }
-	// bpm.diskScheduler.Schedule([]DiskRequest{request})
-	//
-	// // Wait for completion
-	// <-promise
-	//
-	// frame.SetDirty(false)
-	// return true
 
 	panic("TODO: Implement BufferPoolManager.FlushPage()")
 }
