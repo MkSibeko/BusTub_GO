@@ -8,6 +8,7 @@ package buffer
 
 import (
 	"container/list"
+	"fmt"
 	"sync"
 
 	"github.com/bustub-go/pkg/common"
@@ -31,22 +32,16 @@ type ARCReplacer struct {
 	targetSize int
 
 	// mru tracks recently used pages (recency list T1 in paper).
-	mru *list.List
+	mru cacheFrame
 
 	// mfu tracks frequently used pages (frequency list T2 in paper).
-	mfu *list.List
+	mfu cacheFrame
 
 	// mruGhost tracks ghost entries from evicted mru pages (B1 in paper).
-	mruGhost *list.List
+	mruGhost cacheFrame
 
 	// mfuGhost tracks ghost entries from evicted mfu pages (B2 in paper).
-	mfuGhost *list.List
-
-	// frameToElement maps frame_id to its list element in mru or mfu.
-	frameToElement map[common.FrameID]*list.Element
-
-	// pageToGhostElement maps page_id to its ghost list element.
-	pageToGhostElement map[common.PageID]*list.Element
+	mfuGhost cacheFrame
 
 	// frameInfo stores metadata about each frame.
 	frameInfo map[common.FrameID]*arcFrameInfo
@@ -55,6 +50,11 @@ type ARCReplacer struct {
 	evictableCount int
 
 	mu sync.Mutex
+}
+
+type cacheFrame struct {
+	list   *list.List
+	lookup map[common.PageID]*list.Element
 }
 
 // arcFrameInfo stores metadata for a frame in the ARC replacer.
@@ -74,16 +74,14 @@ type arcGhostEntry struct {
 // NewARCReplacer creates a new ARC replacer.
 func NewARCReplacer(numFrames int) *ARCReplacer {
 	return &ARCReplacer{
-		replacerSize:       numFrames,
-		targetSize:         0,
-		mru:                list.New(),
-		mfu:                list.New(),
-		mruGhost:           list.New(),
-		mfuGhost:           list.New(),
-		frameToElement:     make(map[common.FrameID]*list.Element),
-		pageToGhostElement: make(map[common.PageID]*list.Element),
-		frameInfo:          make(map[common.FrameID]*arcFrameInfo),
-		evictableCount:     0,
+		replacerSize:   numFrames,
+		targetSize:     0,
+		mru:            cacheFrame{list.New(), make(map[common.FrameID]*list.Element)},
+		mfu:            cacheFrame{list.New(), make(map[common.FrameID]*list.Element)},
+		mruGhost:       cacheFrame{list.New(), make(map[common.FrameID]*list.Element)},
+		mfuGhost:       cacheFrame{list.New(), make(map[common.FrameID]*list.Element)},
+		frameInfo:      make(map[common.FrameID]*arcFrameInfo),
+		evictableCount: 0,
 	}
 }
 
@@ -108,6 +106,12 @@ func (r *ARCReplacer) Evict() (common.FrameID, bool) {
 	// 7. Trim ghost list if exceeds capacity
 	// 8. Return the evicted frame_id
 
+	if r.evictableCount == 0 {
+		return common.InvalidFrameID, false
+	}
+
+	// r.targetSize
+
 	return common.InvalidFrameID, false
 }
 
@@ -127,27 +131,73 @@ func (r *ARCReplacer) RecordAccess(frameID common.FrameID, accessType common.Acc
 func (r *ARCReplacer) RecordAccessWithPageID(frameID common.FrameID, pageID common.PageID, accessType common.AccessType) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// check mru
+	frame := r.mru.lookup[frameID]
+	if frame != nil {
+		// L1 hit
+		r.mru.list.Remove(frame)
+		delete(r.mru.lookup, frame.Value.(common.PageID))
+		r.mfu.lookup[frameID] = r.mfu.list.PushFront(frame)
+		return
+	}
 
-	// TODO: Implement ARC access recording
-	//
-	// Case 1: Frame exists in mru or mfu
-	//   - Remove from current list
-	//   - Add to front of mfu (promotes to frequency list)
-	//   - Update frameInfo.inMFU = true
-	//
-	// Case 2: Page exists in mruGhost
-	//   - Adapt: increase targetSize (favor recency)
-	//   - Remove from ghost list
-	//   - Add frame to front of mfu
-	//
-	// Case 3: Page exists in mfuGhost
-	//   - Adapt: decrease targetSize (favor frequency)
-	//   - Remove from ghost list
-	//   - Add frame to front of mfu
-	//
-	// Case 4: Complete miss
-	//   - Add frame to front of mru (new entry starts in recency list)
-	//   - Create new frameInfo
+	//check mfu
+	frame = r.mfu.lookup[frameID]
+	if frame != nil {
+		// L2 hit bring to front of mfu
+		r.mfu.list.Remove(frame)
+		r.mfu.list.PushFront(frame)
+		return
+	}
+
+	mruGhostListSize := r.mruGhost.list.Len()
+	mfuGhostListSize := r.mfuGhost.list.Len()
+
+	//miss mru & mfu
+	frame = r.mruGhost.lookup[pageID]
+	if frame != nil {
+		if mruGhostListSize >= mfuGhostListSize && r.targetSize < r.replacerSize {
+			r.targetSize++
+		} else if newTarget := r.targetSize + int(mfuGhostListSize/mruGhostListSize); newTarget <= r.replacerSize {
+			r.targetSize = newTarget
+		}
+
+		r.mruGhost.list.Remove(frame)
+		r.mfu.list.PushFront(frame)
+	}
+
+	//miss mru & mfu & mruGhost
+	frame = r.mfuGhost.lookup[pageID]
+	if frame != nil {
+		if mfuGhostListSize > mruGhostListSize && r.targetSize > 0 {
+			r.targetSize--
+		} else if newTarget := r.targetSize - int(mruGhostListSize/mfuGhostListSize); newTarget >= 0 {
+			r.targetSize = newTarget
+		}
+
+		r.mfuGhost.list.Remove(frame)
+		r.mfu.list.PushFront(frame)
+	}
+	mruSize := r.mru.list.Len()
+	mfuSize := r.mfu.list.Len()
+
+	//cache miss make space in L1 or B1
+	if mruSize+mruGhostListSize == r.replacerSize {
+		// kick out last mruGhost frame
+		frame = r.mruGhost.list.Back()
+		r.mruGhost.list.Remove(frame)
+		delete(r.mruGhost.lookup, frame.Value.(common.PageID))
+	}
+
+	if mruSize+mruGhostListSize+mfuSize+mfuGhostListSize == 2*r.replacerSize {
+		// kick out last mfuGhost frame
+		frame = r.mfuGhost.list.Back()
+		r.mfuGhost.list.Remove(frame)
+		delete(r.mfuGhost.lookup, frame.Value.(common.PageID))
+	}
+
+	r.mru.lookup[frameID] = r.mru.list.PushFront(frameID) // add to mru
+
 }
 
 // SetEvictable sets whether a frame can be evicted.
@@ -189,36 +239,43 @@ func (r *ARCReplacer) Size() int {
 	return r.evictableCount
 }
 
-// adaptTargetSize adjusts targetSize based on ghost list hit.
-func (r *ARCReplacer) adaptTargetSize(hitMRUGhost bool) {
-	// TODO: Implement target size adaptation
-	//
-	// If hit mruGhost: increase targetSize (give more space to recency)
-	//   delta = max(1, mfuGhost.size / mruGhost.size)
-	//   targetSize = min(targetSize + delta, replacerSize)
-	//
-	// If hit mfuGhost: decrease targetSize (give more space to frequency)
-	//   delta = max(1, mruGhost.size / mfuGhost.size)
-	//   targetSize = max(targetSize - delta, 0)
-}
-
 // trimGhostLists ensures ghost lists don't exceed capacity.
 func (r *ARCReplacer) trimGhostLists() {
-	// TODO: Implement ghost list trimming
-	//
-	// Total ghost capacity = replacerSize
-	// If mruGhost.size + mfuGhost.size > replacerSize:
-	//   - Remove oldest entries from the larger ghost list
+	mfuGhostLen := r.mfuGhost.list.Len()
+	mruGhostLen := r.mruGhost.list.Len()
+	if mfuGhostLen+mruGhostLen > r.replacerSize {
+		if mfuGhostLen > mruGhostLen {
+			removeFrameFromGhostList(&r.mfuGhost)
+			return
+		}
+		removeFrameFromGhostList(&r.mruGhost)
+	}
+}
+
+func removeFrameFromGhostList(ghostList *cacheFrame) {
+	ghostFrame := ghostList.list.Back() //dereference
+	ghostList.list.Remove(ghostFrame)
+	delete(ghostList.lookup, ghostFrame.Value.(common.PageID))
 }
 
 // moveToMFU moves a frame from mru to the front of mfu.
 func (r *ARCReplacer) moveToMFU(frameID common.FrameID) {
-	// TODO: Implement list movement
+	frame := r.mru.lookup[frameID]
+	if frame != nil {
+		r.mru.list.Remove(frame)
+		r.mfu.list.PushBack(frameID)
+		return
+	}
+	panic(fmt.Errorf("frameID: %d is not in mru list", frameID))
 }
 
 // addToGhostList adds a page to the appropriate ghost list.
 func (r *ARCReplacer) addToGhostList(pageID common.PageID, fromMFU bool) {
-	// TODO: Implement ghost list addition
+	if fromMFU {
+		r.mfuGhost.list.PushBack(pageID)
+		return
+	}
+	r.mruGhost.list.PushBack(pageID)
 }
 
 // Ensure ARCReplacer implements Replacer interface.
